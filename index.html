@@ -148,16 +148,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
-    <!-- Preload Responsive AVIF Flagship Hero Asset for Fast LCP Discovery -->
-    <link
-      rel="preload"
-      as="image"
-      type="image/avif"
-      href="/images/optimized/store_hero_showcase-768.avif"
-      imagesrcset="/images/optimized/store_hero_showcase-480.avif 480w, /images/optimized/store_hero_showcase-768.avif 768w, /images/optimized/store_hero_showcase-1024.avif 1024w"
-      imagesizes="(max-width: 1024px) 100vw, 568px"
-      fetchpriority="high"
-    />
 
     <!-- Asynchronous Non-Render-Blocking Web Fonts -->
     <link
@@ -299,7 +289,7 @@
         document.documentElement.classList.add('dark');
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-BhrO1-45.js"></script>
+    <script type="module" crossorigin src="/assets/index-D4exbF3L.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/vendor-react-BzXqRi8k.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-motion-cNmfiwpP.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-icons-C_jvLh5s.js">
@@ -320,7 +310,11 @@
           navigator.serviceWorker.getRegistrations().then(function(registrations) {
             for (var i = 0; i < registrations.length; i++) {
               var reg = registrations[i];
-              try { reg.update(); } catch(e) {}
+              try {
+                reg.update().catch(function() {
+                  reg.unregister().catch(function() {});
+                });
+              } catch(e) {}
               if (reg.waiting) {
                 try { reg.waiting.postMessage({ type: 'SKIP_WAITING' }); } catch(e) {}
               }
