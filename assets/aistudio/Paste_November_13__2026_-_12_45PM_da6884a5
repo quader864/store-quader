@@ -1,0 +1,246 @@
+# Store API reference
+
+## Base paths and conventions
+
+The store routes are mounted at both `/shop` and `/api/shop`. The examples below use `/shop`; prepend `/api` if the frontend uses that alias. Customer routes use `/shop/me`, admin routes use `/shop/admin`, store-credit routes use `/shop/me/credit`, and reports use `/shop/admin/reports`.
+
+Authenticated routes use the store access token cookie accepted by the application. Unless a route says otherwise, JSON endpoints use `Content-Type: application/json`. IDs may be MongoDB IDs or catalog slugs where the route resolves catalog identifiers.
+
+Prices are positive integer amounts in the configured store currency's smallest unit. `GET /shop/config` returns `{ "currency": "IRR", "priceUnit": "integer smallest unit configured by ZARINPAL_CURRENCY" }`. Catalog `currency`, when supplied, must match that configured currency. Do not convert prices to USD in the client.
+
+All catalog create routes save new items as `status: "draft"` and `isActive: false`. Public listings only return active, published/backorder items and exclude `visibility: "hidden"`. `isActive` is server-managed; use the status endpoint to change lifecycle state.
+
+## Catalog management
+
+| Method and path | Access | Purpose |
+|---|---|---|
+| `GET /shop/creator/catalog?page=1&limit=20&creatorId=...` | Creator, developer, admin, super_admin, moderator | Lists owned catalog records across all four types. `creatorId` can be selected by admin/super_admin/moderator; other roles always see their own records. |
+| `POST /shop/products` | Creator, developer, admin, super_admin, moderator | Create product. |
+| `GET /shop/products` | Public; optional authentication | List published products. Query: `page`, `limit`, `skip`, `search`, `category`, `domain`, `type`. An authenticated buyer also receives `owned` per item. |
+| `GET /shop/products/:id` | Public; optional authentication | Product by ID or slug; authenticated buyer also receives `owned`. |
+| `PUT /shop/products/:id` | Owner, developer, admin, super_admin, moderator | Update product; owner check applies to creator/developer. |
+| `DELETE /shop/products/:id` | Owner, developer, admin, super_admin, moderator | Archive product; records are retained for order and entitlement history. |
+| `POST /shop/bundles` | Creator, developer, admin, super_admin, moderator | Create bundle. |
+| `GET /shop/bundles` | Public | List published bundles. Query: `page`, `limit`, `skip`, `search`, `domain`, `type`. |
+| `GET /shop/bundles/:id` | Public | Bundle by ID or slug. |
+| `PUT /shop/bundles/:id` | Owner, developer, admin, super_admin, moderator | Update bundle. |
+| `DELETE /shop/bundles/:id` | Owner, developer, admin, super_admin, moderator | Archive bundle. |
+| `POST /shop/courses` | Creator, developer, admin, super_admin, moderator | Create course. |
+| `GET /shop/courses` | Public | List published courses. Query: `page`, `limit`, `skip`, `search`, `level`, `category`, `domain`, `type`. Listing only exposes free-preview lessons. |
+| `GET /shop/courses/:id` | Public | Course by ID or slug; curriculum is omitted and only free-preview content is exposed. |
+| `GET /shop/courses/:id/content` | Authenticated instructor, admin, super_admin, moderator, or active entitlement holder | Return the course's complete lesson content. |
+| `PUT /shop/courses/:id` | Owner, developer, admin, super_admin, moderator | Update course. |
+| `DELETE /shop/courses/:id` | Owner, developer, admin, super_admin, moderator | Archive course. |
+| `POST /shop/subscriptions` | Admin, super_admin, moderator | Create plan/subscription. |
+| `GET /shop/subscriptions` | Public | List published plans. Query: `page`, `limit`, `skip`, `search`, `billingCycle`, `domain`, `type`. |
+| `GET /shop/subscriptions/:id` | Public | Plan by ID or slug. |
+| `PUT /shop/subscriptions/:id` | Admin, super_admin, moderator | Update plan. |
+| `DELETE /shop/subscriptions/:id` | Admin, super_admin, moderator | Archive plan. |
+| `PATCH /shop/catalog/:itemType/:id/status` | Owner or admin/super_admin/moderator; subscriptions admin/super_admin/moderator only | Set lifecycle state for `product`, `bundle`, `course`, or `subscription`. |
+
+Creator/developer write routes permit edits and archiving of the caller's own items; admin/super_admin/moderator can manage catalog records across creators. The general status endpoint allows owners to submit `draft` or `review`; only admin/super_admin/moderator can publish, archive, or set other states. Accepted statuses: `draft`, `review`, `published`, `out_of_stock`, `backorder`, `archived`, `discontinued`. `PATCH /shop/products/:id/status` is retained as a product-only admin/moderator compatibility endpoint. Catalog `DELETE` routes always archive (`status: "archived"`, `isActive: false`) and return `{ "message": "... archived successfully", "archived": true }`; there is no hard-delete API.
+
+### Create and update payloads
+
+Unknown fields are stripped by validation. Fields not listed for a type cannot be changed through that type's generic update route. Create requests require the required fields below; on update, all listed type fields are optional but at least one recognized field must be provided.
+
+Shared optional catalog fields:
+
+| Field | Type and constraints |
+|---|---|
+| `slug` | Lowercase URL slug, max 180 characters; letters, digits, and single hyphens. Generated from the title/name when omitted on create. |
+| `subtitle` | String, max 240 characters. |
+| `sku` | String, max 120 characters. |
+| `price` | Positive integer; required on create. |
+| `originalPrice` | Positive integer, must be greater than or equal to `price` when both are supplied. |
+| `currency` | `IRR` or `IRT`, and must equal the configured store currency. |
+| `domain` | `fintech`, `saas`, `commerce`, `frontend`, `software`, or `other`. |
+| `image` | URI. `images` is accepted on product and bundle, as an array of URIs; the first image is used as the primary image if `image` is absent. |
+| `visibility` | `hidden`, `catalog`, `search`, or `featured`; model default is `catalog`. |
+| `refundPolicy` | Optional object described below. |
+| `seatAllocation` | String, max 300 characters. |
+| `tags` | Up to 40 strings, each max 60 characters. |
+| `features` | Up to 60 strings, each max 500 characters. |
+| `architectureSpecs` | Up to 60 `{ "label": string, "value": string }` entries; label max 100, value max 500 characters. |
+| `fileTree` | Up to 1,000 entries `{ "path": string, "type": "file"|"folder", "size"?: string, "description"?: string }`; path max 500, size max 40, description max 500 characters. |
+| `changelog` | Up to 100 entries `{ "version": string, "date": string, "highlights"?: string[] }`; version/date max 80 characters, up to 50 highlights of max 500 characters each. |
+
+`refundPolicy` may be included in the create or update body; updates merge supplied policy keys into the existing policy. To enable refunds, set `allowed: true`, `storeCredit: true`, and at least one of `fullRefund` or `partialRefund`:
+
+```json
+{
+  "allowed": true,
+  "fullRefund": false,
+  "partialRefund": true,
+  "refundWindowHours": 72,
+  "digitalAccessRevoked": true,
+  "conditions": ["No download has started"],
+  "exclusions": []
+}
+```
+
+All properties are optional unless `allowed` is true. `refundWindowHours` is an integer from `0` to `87600`; `0` means no time limit. `conditions` and `exclusions` are up to 50 strings (each max 500 characters) for customer/staff review; free-text entries are not automatically evaluated. Refund eligibility uses the policy snapshot saved with the order. The current refund workflow supports store-credit settlement only; it does not initiate a gateway refund. Existing orders carrying the legacy `paymentRefund: true` policy marker retain their prior refund eligibility and are still settled as store credit. `cancellationWindowHours`, `paymentRefund`, `returnRequired`, and `returnShippingResponsibility` are not accepted configuration fields because those behaviors are not implemented for the current digital-only catalog.
+
+`fullRefund` permits refunding the remaining refundable balance. `partialRefund` permits an explicitly requested amount smaller than that balance. All lines in a mixed order must permit the requested refund type and store-credit settlement; otherwise the request is denied. A partial-only policy requires an explicit `amount`. `digitalAccessRevoked` applies when the refund completes the full remaining order refund; per-line partial refund allocation is not supported.
+
+#### Product
+
+`POST /shop/products` requires `description` (10–5,000 characters), `price`, and at least one of `name` or `title` (3–200 characters). If only one name alias is provided it is copied to the other. `category` defaults to `software`; accepted values are `software`, `course`, `template`, `service`, `other`. `type` is `digital` and defaults to `digital`.
+
+Product-specific optional fields:
+
+- `category`, `type`, plus the shared fields above. `images` is an array of URIs.
+- `stock`: non-negative integer, and `trackInventory`: boolean, may be set on create only.
+- `variants`: array of `{ _id?, name, sku?, price?, originalPrice?, currency?, image?, isActive?, attributes?, description? }`. `name` is required (2–200 characters); `attributes` is an array of `{ label, value }`; description max 1,000 characters. Variant `_id` is a MongoDB ID. On update, variants are merged: send an existing `_id` to edit, omit `_id` to add, and omitted existing variants are preserved. Inventory values are preserved and inventory is managed by inventory endpoints, not generic product edits. To disable one or more variants without deleting their inventory or order history, send `deactivateVariantIds: ["<variantId>"]`; a variant cannot be updated and deactivated in the same request.
+
+#### Bundle
+
+`POST /shop/bundles` requires `description`, `price`, at least one of `name`/`title`, and at least one of `products`/`items`. `type` is `bundle`.
+
+Bundle-specific optional fields:
+
+- `products`: array of unique product references (MongoDB ID or slug).
+- `items`: array of unique references. Each can be an ID/slug or `{ "type": "product"|"course", "id": "<ID-or-slug>", "variantId"?: "<ID-or-slug>", "quantity"?: 1 }`. Quantity is an integer from 1 to 100.
+- `discount`: number from 0 to 100.
+- Shared fields above; `images` is accepted.
+
+Bundle references are resolved and validated by the server; clients should send component references, not prices for bundle components.
+
+#### Course
+
+`POST /shop/courses` requires `title` (5–200 characters), `description` (10–5,000 characters), `price`, and at least one of `content` or `curriculum`. Course `instructor` defaults to the creating user and `category` defaults to `other`.
+
+Course-specific optional fields:
+
+- `instructor`: MongoDB user ID.
+- `level`: `beginner`, `intermediate`, `advanced`, or `expert`.
+- `category`: string; `thumbnail`: URI. `image` is also accepted and aliases with `thumbnail`.
+- `content`: 1–500 modules, each `{ "id": string, "title": string, "order"?: integer, "lessons": [...] }`. Each module needs at least one lesson. Lessons are `{ "id": string, "title": string, "duration": string, "videoUrl"?: URI, "isPreviewFree"?: boolean, "order"?: integer }`.
+- `curriculum`: modules `{ "moduleNumber": number, "moduleName": string, "lessons": [...] }`; each lesson has `{ "lessonNumber": number, "lessonName": string, "duration": number, "videoUrl"?: URI }`. Duration is in minutes.
+- Shared fields above except `images` is not accepted by the course validator.
+
+Course video is a URL per lesson; there is no video-upload API, so this API defines no video file-size or video-count upload allowance. `content` maps to the course curriculum representation. To attach a video to an individual lesson, set that lesson's `videoUrl`.
+
+#### Plan / subscription
+
+`POST /shop/subscriptions` requires `name` (3–200 characters), `description` (10–5,000 characters), positive integer `price`, non-empty `features`, and at least one of `billingCycle` or `period`. `title` is optional and aliases with `name`.
+
+Plan-specific optional fields:
+
+- `billingCycle`: `monthly`, `quarterly`, `yearly`; or legacy `period`: `/month`, `/quarter`, `/year`. The server normalizes either representation and returns both.
+- `recommended`: boolean; `maxSeats`: positive integer; `licenseType`: string up to 200 characters.
+- `maxUsers`: number at least 1; aliases with `maxSeats`.
+- `autoRenew`: may only be set to `false`; `trialDays` may only be set to `0`. Recurring renewal and trials are not implemented, so plans are fixed-term one-time purchases. Legacy plans with renewal/trial settings enabled are not purchasable until those fields are disabled.
+- `image`: URI, `sku`, `visibility`, `refundPolicy`, and `features` (non-empty array).
+
+The customer cancellation endpoint records `cancelAtPeriodEnd` on the entitlement; it does not stop or create recurring charges. Plan access still ends at its existing entitlement expiration.
+
+### Lifecycle and catalog response shapes
+
+The generic lifecycle request is:
+
+```json
+{ "status": "review", "reason": "Ready for review" }
+```
+
+`reason` is optional and max 500 characters. Success response:
+
+```json
+{
+  "success": true,
+  "itemType": "product",
+  "item": { "_id": "...", "status": "review", "isActive": false },
+  "status": "review",
+  "isActive": false
+}
+```
+
+Create returns HTTP 201 and `{ "message": "... created successfully", "<type>": <catalog item> }`; update returns HTTP 200 with the corresponding item. Delete returns `{ "message": "... archived successfully", "archived": true }`; it archives rather than physically deleting the catalog record to retain purchase history and access records. Catalog item views expose the stored fields plus normalized `title`, `name`, `type`, `image`, `currency`, `originalPrice`, `rating`, and `reviewsCount`/`reviews`. Product `downloads` expose only `{ downloadId, fileName, active }`; private R2 object keys are never included in public catalog responses. Bundle views also include `items` and `components`; subscription views include normalized `period` and `maxSeats`.
+
+List responses use `products`, `bundles`, `courses`, or `subscriptions` and `pagination: { total, page, limit, totalPages, skip }`. Creator listing returns `{ success, catalog: [{ type, items, total }, ...], pagination: { page, limit } }`. Course public endpoints redact full lessons; use the entitlement-protected `/courses/:id/content` route for enrolled content.
+
+## Product downloadable files
+
+| Method and path | Access | Request and response |
+|---|---|---|
+| `POST /shop/products/:id/downloads/upload` | Product owner or admin/moderator/super_admin | `multipart/form-data`, one file in field `file`. HTTP 201 `{ success: true, download: { downloadId, fileName, fileSize, contentType, active } }`. |
+| `PUT /shop/products/:id/downloads` | Product owner or admin/moderator/super_admin | JSON `{ "downloads": [{ "downloadId": "...", "key": "products/<creatorId>/...", "fileName"?: "...", "active"?: true }] }`; replaces the download metadata list. Success `{ success: true, downloads: [...] }`. |
+| `GET /shop/me/downloads/:entitlementId/:downloadId` | Authenticated owner of active product entitlement | Returns `{ success: true, url, expiresIn, fileName }` with a short-lived private download URL. |
+
+Uploads accept one archive/document/application/binary file, up to 100 MiB per file, with extensions `.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`, `.pdf`, `.exe`, `.msi`, `.dmg`, `.pkg`, `.apk`, `.deb`, `.rpm`, `.bin`. Videos are not accepted. The route buffers the file in application memory before sending it to R2, so the 100 MiB cap is an application limit, not a Cloudflare R2 limit; consider worker memory when configuring concurrency. The upload is stored privately in the R2 product-download bucket under `products/<creatorId>/<productId>/...`; customers receive access only via the entitlement-gated URL endpoint. A product may have at most 100 downloads.
+
+## Storefront, checkout, and customer endpoints
+
+All customer endpoints below require authentication except catalog browsing/reviews and promotion validation.
+
+| Method and path | Request | Response / behavior |
+|---|---|---|
+| `GET /shop/config` | None | `{ currency, priceUnit }`. |
+| `POST /shop/promotions/validate` | `{ "code": "...", "items": [...] }`; customer ID is inferred when signed in. | `{ success: true, ...validationResult }`. |
+| `POST /shop/checkout` | `Idempotency-Key` header and `{ "items": [{ "type": "product"|"bundle"|"course"|"subscription", "id": "<ID-or-slug>", "variantId"?: "<id-or-{_id}>", "quantity": 1 }], "couponCode"?: "..." }`. | `{ success, orderId, paymentId, status, totalAmount, currency, redirect? }`; server computes authoritative prices. |
+| `GET /shop/orders/:orderId` | None | `{ success: true, order }`, scoped to the current buyer. |
+| `GET /shop/me/orders?page=1&limit=25` | None | `{ success, orders, pagination }`. |
+| `GET /shop/library` | None | `{ success: true, entitlements }`. |
+| `GET /shop/me/cart` | None | `{ success: true, cart: { items: [...] } }`. |
+| `POST /shop/me/cart/items` | `{ "itemType": "product"|"bundle"|"course"|"subscription", "itemId": "<id>", "variantId"?: "<product variant id>", "quantity"?: 1 }`; quantity 1–99. | `{ success: true, cart }`. |
+| `DELETE /shop/me/cart/items/:itemType/:itemId?variantId=...` | None | `{ success: true, cart }`; omitting `variantId` removes all variants of that catalog item. |
+| `DELETE /shop/me/cart` | None | `{ success: true, cart }` with empty items. |
+| `GET /shop/orders/:orderId/refund-eligibility` | None | `{ success: true, eligible, allowedAmount, ... }` with eligibility detail. |
+| `POST /shop/orders/:orderId/refund` | Required `Idempotency-Key` header and `{ "amount"?: positive integer, "reason"?: string, "notes"?: string }`. Omit amount only when full refund is allowed; partial-only policy requires an amount smaller than the remaining balance. | HTTP 201 `{ success: true, refund }`; replaying the same key returns the existing refund, while reusing it for a different request returns 409. |
+| `GET /shop/me/refunds?page=1&limit=25` | None | `{ success, refunds, pagination }`. |
+| `GET /shop/me/subscriptions` | None | `{ success: true, subscriptions }` (customer entitlements). |
+| `PATCH /shop/me/subscriptions/:entitlementId/cancellation` | `{ "cancelAtPeriodEnd": true }` | `{ success: true, subscription }`. |
+| `GET /shop/me/credit/balance` | None | `{ success: true, credit }`. |
+| `GET /shop/me/credit/transactions` | None | `{ success: true, transactions }`. |
+| `POST /shop/me/credit/top-ups` | `Idempotency-Key` and `{ "amount": <positive integer>, "currency": "IRR"|"IRT", "destination"?: "store_credit" }`. | HTTP 201 `{ success, topUpId, payment, redirectUrl }`. |
+| `GET /shop/reviews?productId=<id-or-slug>&itemType=...` | Public; `productId` required. `itemType` optional (`product`, `bundle`, `course`, `subscription`). | `{ reviews: [...] }`. |
+| `POST /shop/reviews` | Authenticated verified purchaser: `{ "productId": "...", "itemType"?: "...", "rating": 1-5, "content": "..." }`. | HTTP 201 `{ review }`; one review per user/item. |
+
+The old `/shop/payments/create` amount-based endpoint is retired (HTTP 410, `CHECKOUT_REQUIRED`). Use `/shop/checkout`; payment status is available at `GET /shop/payments/status/:paymentId`. Payment callbacks use `GET /shop/payments/callback`.
+
+## Admin and operations endpoints
+
+These are mounted under `/shop/admin` unless otherwise noted. Responses are JSON with the indicated top-level key; exact persisted entities are returned where shown.
+
+| Method and path | Access | Request / response |
+|---|---|---|
+| `GET /shop/categories?page=1&limit=20&status=published&parentId=...` | Public | `{ categories: [{ _id, name, slug, description, status, sortOrder, parentId }], pagination }`. |
+| `POST /shop/categories` | Admin, super_admin, moderator | `{ name, slug?, description?, status?: "draft"|"published"|"archived", sortOrder?: integer, parentId?: id|null }`; name is 2–80 characters. HTTP 201 `{ success: true, category }`. |
+| `PATCH /shop/categories/:id` | Admin, super_admin, moderator | Any subset of `name`, `slug`, `description`, `status`, `sortOrder`, `parentId`; returns `{ success: true, category }`. |
+| `GET /shop/admin/inventory` | Admin, super_admin, manager, creator | Optional `productId`, `variantId`, `sku`, `status`, `lowStock=true`, `outOfStock=true`, `backorder=true`, `page`, `limit`. `{ success, inventory, pagination }`. Creator is restricted to their products. |
+| `GET /shop/admin/inventory/:productId?variantId=...` | Same; creator sees own products | `{ success, inventory }`. |
+| `GET /shop/admin/inventory/:productId/history?variantId=...&page=1&limit=20` | Same | `{ success, history }`. |
+| `POST /shop/admin/inventory/adjust` | Same; creators only for their own products | `{ productId, variantId?, delta, reason }` (`delta` is a non-zero integer; reason is required). Cannot reduce on-hand below reserved. HTTP 201 `{ success, inventory }`. |
+| `PATCH /shop/admin/inventory/:productId/config` | Same; creators only for their own products | `{ variantId?, backorderEnabled?, lowStockThreshold?, reason }`; reason is required and at least one config field must be provided. `lowStockThreshold` is a non-negative integer. `{ success, inventory }`. |
+| `GET /shop/admin/inventory/:productId/reconcile?variantId=...` | Same; creators only for their own products | Read-only reservation/order reconciliation; `{ success, report }`. |
+| `POST /shop/admin/inventory/:productId/resync` | Same; creators only for their own products | Requires `{ "confirm": true, "reason": "..." }`; recomputes only derived available/status values when reconciliation finds no reservation/order discrepancy. `{ success, reconciliation }`; returns 409 when counters cannot be safely reconciled. |
+| `GET /shop/admin/entitlements` | Admin, support, finance | Filters: `userId`, `itemType`, `itemId`, `status`, `sourceType`, `page`, `limit`; `{ success, entitlements, pagination }`. |
+| `POST /shop/admin/entitlements/manual-grant` | Admin | `{ userId, itemType, itemId, itemName, quantity?: 1, reason? }`; HTTP 201 `{ success, entitlement, audit }`. |
+| `POST /shop/admin/entitlements/:id/revoke` | Admin | `{ reason? }`; `{ success, entitlement, audit }`. |
+| `POST /shop/admin/entitlements/:id/restore` | Admin | `{ reason? }`; `{ success, entitlement, audit }`. |
+| `GET /shop/admin/customers` | Admin, super_admin, manager, support | Optional `search`, `page`, `limit`; `{ success, customers, pagination }`. |
+| `PATCH /shop/admin/customers/:customerId/profile` | Admin, super_admin, manager | Any of `firstName`, `lastName`, `username`, `country`, `city`, `phoneNumber`, `address`; `{ success, customer }`. |
+| `GET /shop/admin/orders` | Admin, super_admin, manager, support, finance | Filters `status`, `customerId`, `currency`, `from`, `to`, `search`, `salesChannel`, `page`, `limit`; `{ success, orders, pagination }`. |
+| `GET /shop/admin/orders/:orderId` | Same | `{ success, order, paymentHistory, paymentEvents, refundHistory, fulfillment, inventory, entitlements, adminNotes }`. Finance roles receive financial amounts. |
+| `GET /shop/admin/orders/:orderId/timeline` | Same | Order timeline and events. |
+| `POST /shop/admin/orders/:orderId/notes` | Admin, super_admin, manager, support, finance | `{ "body": "..." }` (1–2,000 characters); HTTP 201 `{ success: true, note }`. |
+| `POST /shop/admin/orders/:orderId/cancel` | Admin, super_admin, manager, support | `{ "reason": "..." }` (1–500 characters); `{ success, order }`. Orders with a live/uncertain payment cannot be cancelled. |
+| `POST /shop/admin/orders/:orderId/fulfillment/retry` | Admin, super_admin | Empty JSON body; retry only works for paid orders with failed/pending fulfillment. `{ success, order }`. |
+| `PATCH /shop/admin/orders/:orderId/shipping` | Admin, super_admin, manager | `{ status: "SHIPPED"|"DELIVERED", carrier?, trackingNumber? }`; shipping requires carrier and tracking number. `{ success, order }`. |
+| `GET /shop/admin/refunds` | Admin, super_admin, manager, support, finance | Refund filters and pagination; `{ success, refunds, pagination }`. |
+| `POST /shop/admin/orders/:orderId/refunds` | Admin, super_admin, finance | Required `Idempotency-Key` and `{ amount?: positive integer, reason?: string, notes?: string }`. Omit amount only when full refund is allowed; partial-only policy requires amount. HTTP 201 `{ success, refund }`. |
+| `POST /shop/admin/refunds/:refundId/approve` | Admin, super_admin, finance | `{ reason?: string, approvedAmount?: positive integer }`; `{ success, refund }`. |
+| `POST /shop/admin/refunds/:refundId/process` | Admin, super_admin, finance | `{ reason?: string }`; `{ success, refund }`. |
+| `POST /shop/admin/refunds/:refundId/fail` | Admin, super_admin, finance | `{ reason?: string }`; `{ success, refund }`. |
+| `POST /shop/admin/refunds/:refundId/cancel` | Admin, super_admin, finance | `{ reason?: string }`; `{ success, refund }`. |
+| `POST /shop/admin/refunds/:refundId/settle-manual` | Admin, super_admin, finance | Required `{ reason: string }`; only after approval/processing. Records the refund and credits the customer's store-credit balance; it does not contact the payment gateway. `{ success, providerConfirmed: false, refund }`. |
+| `GET /shop/admin/credit/reconciliation` | Admin, super_admin, finance | `{ success, report }`. |
+| `GET /shop/admin/audit-logs` | Admin, super_admin | Optional `action`, `entityType`, `entityId`, `actorRole`, `actorId`, `correlationId`, `from`, `to`, `page`, `limit`; `{ success, auditLogs, pagination }`. |
+
+Admin promotion routes are `/shop/admin/promotions` (GET list, GET `/:id`, POST create, PUT `/:id` update), `PATCH /:id/status`, POST `/:id/archive`, POST `/:id/restore`, and GET `/:id/usage`. They are restricted to admin, super_admin, and manager. Create/update accept `name`, `code`, `description`, `type`, `status`, `priority`, `startAt`, `endAt`, `usageLimit`, `perCustomerLimit`, `percent`, `fixedAmount`, `minOrderAmount`, `maxDiscountAmount`, `applicableProducts`, `applicableVariants`, `applicableCategories`, `excludedProducts`, `excludedVariants`, `excludedCategories`, `excludedSaleItems`, `eligibleCustomerIds`, `firstOrderOnly`, `stackable`, `exclusive`, `maxApplicablePerOrder`, `shippingThreshold`, `requireCode`, `triggeredByCode`, and `bogo`. Supported types are `PERCENTAGE`, `FIXED_AMOUNT`, `COUPON`, `AUTOMATIC`, `FIRST_ORDER`, `PRODUCT`, `CATEGORY`, `CUSTOMER_SPECIFIC`, `BOGO`, `BUNDLE`, and `FREE_SHIPPING`; statuses are `draft`, `active`, `paused`, `expired`, and `archived`. Codes are normalized to uppercase and may contain only letters, digits, `_`, and `-`; names must be at least 2 characters. Percent is 0–100; amounts and limits must be non-negative; dates must be ordered; BOGO quantities must be positive/non-negative as applicable. Type-specific required configuration is validated before use. Status accepts `{ "status": "..." }` and follows explicit transition rules; archive and restore are lifecycle operations, not hard deletion. Mutation responses use `{ success: true, promotion }`, while usage returns `{ success: true, usage }`.
+
+Financial reports are mounted at `/shop/admin/reports`: `GET /revenue`, `/products`, `/customers`, `/customers/:customerId/history`, `/creators`, `/conversions`, `/promotions`, and `/export.csv`. `/revenue`, `/customers`, `/customers/:customerId/history`, `/promotions`, and `/export.csv` require admin, super_admin, manager, or finance. `/products`, `/creators`, and `/conversions` also allow creators and vendors; creator/vendor results are scoped to the caller's own creator ID. CSV export returns a file rather than a JSON envelope.
+
+## Error behavior
+
+Validation errors generally return HTTP 400 with either `{ error: "Validation failed", details: [{ field, message }] }` or `{ success: false, error }`. Unauthorized requests return 401/403; missing catalog/order records return 404. Checkout uses 409 for conflicting idempotency, ownership, or stock states. Uploads return 413 above the 100 MiB application limit. Unhandled errors use `{ success: false, error, correlationId }`.
